@@ -1,0 +1,14 @@
+# Security: Never upload API keys
+.env
+backend/.env
+
+# Dependencies: Never upload heavy libraries
+node_modules/
+venv/
+backend/venv/
+__pycache__/
+*.pyc
+
+# OS generated files
+.DS_Store
+Thumbs.db
