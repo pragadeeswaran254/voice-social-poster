@@ -15,7 +15,7 @@ function App() {
 
   const fetchPosts = async () => {
     try {
-      const response = await axios.get("http://127.0.0.1:8000/posts")
+      const response = await axios.get("https://voice-social-poster.onrender.com/posts")
       setPosts(response.data)
     } catch (error) {
       setStatus("Error: Backend not connected")
@@ -32,7 +32,7 @@ function App() {
     setStatus(`Generating ${tone} Content... Please Wait ⏳`)
     
     try {
-      await axios.post("http://127.0.0.1:8000/posts", newPost)
+      await axios.post("https://voice-social-poster.onrender.com/posts", newPost)
       setContent("")
       fetchPosts()
       setStatus("Content Generated! ✅")
@@ -54,7 +54,7 @@ function App() {
     formData.append("tone", tone);
 
     try {
-      await axios.post("http://127.0.0.1:8000/upload-image", formData, {
+      await axios.post("https://voice-social-poster.onrender.com/upload-image", formData, {
         headers: { "Content-Type": "multipart/form-data" }
       });
       fetchPosts();
