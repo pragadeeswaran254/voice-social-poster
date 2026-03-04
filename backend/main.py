@@ -6,6 +6,12 @@ import os
 from dotenv import load_dotenv
 import json
 import random
+import requests
+import re 
+
+# --- Scheduler Imports ---
+from apscheduler.schedulers.background import BackgroundScheduler
+from datetime import datetime
 
 # --- Database Imports ---
 from sqlalchemy import create_engine, Column, Integer, String, Text
@@ -22,11 +28,11 @@ engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- 1. UPDATED DATABASE SCHEMA ---
+# --- 1. DATABASE SCHEMA ---
 class PostDB(Base):
     __tablename__ = "posts"
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(String, index=True) # <--- NEW: Links post to specific user
+    user_id = Column(String, index=True) 
     content = Column(String, index=True)
     tone = Column(String)
     instagram_version = Column(Text)
@@ -35,6 +41,8 @@ class PostDB(Base):
     image_seed = Column(Integer)      
     is_upload = Column(Integer, default=0) 
     image_data = Column(Text, nullable=True) 
+    scheduled_time = Column(String, nullable=True) 
+    status = Column(String, default="Generated") 
 
 Base.metadata.create_all(bind=engine)
 
@@ -42,44 +50,112 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In production, restrict this to your Vercel URL
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- 2. UPDATED PYDANTIC MODEL ---
+# --- 2. SCHEDULER ENGINE (TELEGRAM & MOCK WEBHOOK AUTOMATION) ---
+def check_scheduled_posts():
+    db = SessionLocal() 
+    try:
+        current_time = datetime.now().strftime("%Y-%m-%dT%H:%M") 
+        
+        due_posts = db.query(PostDB).filter(
+            PostDB.status == "Scheduled",
+            PostDB.scheduled_time <= current_time
+        ).all()
+
+        for post in due_posts:
+            print(f"[{current_time}] 🚀 Publishing Post ID {post.id}...")
+            
+            # Reconstruct the Image URL
+            ignore_words = ["today", "went", "want", "just", "like", "with", "this", "that", "the", "and", "for", "from"]
+            clean_content = re.sub(r'[^a-z ]', '', post.content.lower())
+            words = clean_content.split()
+            search_keywords = [w for w in words if len(w) > 2 and w not in ignore_words][:2]
+            keywords_str = ",".join(search_keywords) if search_keywords else "social"
+            
+            image_url = f"https://loremflickr.com/800/800/{keywords_str}?lock={post.image_seed}"
+
+            # --- CHANNEL A: Publish to Telegram ---
+            BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+            CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+            
+            if BOT_TOKEN and CHAT_ID:
+                try:
+                    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", json={
+                        "chat_id": CHAT_ID,
+                        "photo": image_url
+                    })
+                    
+                    text_message = f"🤖 *AI PUBLISH SUCCESS*\n\n📸 *Instagram:*\n{post.instagram_version}\n\n🐦 *Twitter:*\n{post.twitter_version}"
+                    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                        "chat_id": CHAT_ID,
+                        "text": text_message,
+                        "parse_mode": "Markdown"
+                    })
+                    print("💬 Telegram Channel: SUCCESS")
+                except Exception as e:
+                    print(f"⚠️ Telegram Error: {e}")
+            else:
+                print("⚠️ Telegram keys missing!")
+
+            # --- CHANNEL B: SEND TO MOCK WEBHOOK APP ---
+            try:
+                # We send the generated image and the instagram caption to port 8001
+                requests.post("http://localhost:8001/webhook", json={
+                    "image_url": image_url,
+                    "caption": post.instagram_version
+                })
+                print("📱 Mock Webhook Channel: SUCCESS")
+            except Exception as e:
+                print(f"⚠️ Mock Webhook Error: {e}")
+            # --------------------------------------------
+
+            # Update database status so frontend shows "Published" badge
+            post.status = "Published"
+            db.commit()
+            print("✅ Database Status Updated")
+            
+    except Exception as e:
+        print(f"Scheduler Error: {e}")
+    finally:
+        db.close()
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(check_scheduled_posts, 'interval', minutes=1)
+scheduler.start()
+
+# --- 3. PYDANTIC MODELS ---
 class PostCreate(BaseModel):
-    user_id: str # <--- NEW: Frontend must send the user's ID
+    user_id: str 
     content: str
     tone: str = "Professional"
+
+class PostSchedule(BaseModel):
+    scheduled_time: str
 
 client = None
 if api_key:
     client = genai.Client(api_key=api_key)
 
-
 @app.get("/")
 def read_root():
     return {"status": "AI Social Media API is Live 🚀"}
 
-# --- 3. UPDATED GET ROUTE (FILTER BY USER) ---
 @app.get("/posts")
-def get_posts(user_id: str = None): # FastAPI automatically looks for ?user_id= in the URL
+def get_posts(user_id: str = None): 
     db = SessionLocal()
-    
-    # If a user is not logged in, return a blank feed immediately
     if not user_id:
         db.close()
         return []
 
-    # STRICT FILTER: Only pull data where the user_id perfectly matches
     posts = db.query(PostDB).filter(PostDB.user_id == user_id).order_by(PostDB.id.desc()).all()
-    
     db.close()
     return posts
 
-# --- 4. UPDATED POST ROUTE (SAVE USER ID) ---
 @app.post("/posts")
 def create_post(post: PostCreate):
     if not client: return {"error": "API Key missing"}
@@ -100,7 +176,7 @@ def create_post(post: PostCreate):
     
     try:
         response = client.models.generate_content(
-            model="gemini-1.5-flash", 
+            model="gemini-2.5-flash", 
             contents=prompt
         )
         
@@ -114,7 +190,7 @@ def create_post(post: PostCreate):
 
         db = SessionLocal()
         new_post_entry = PostDB(
-            user_id=post.user_id, # <--- NEW: Save who created this!
+            user_id=post.user_id, 
             content=post.content,
             tone=post.tone,
             instagram_version=ai_content.get("instagram_version", ""),
@@ -132,3 +208,19 @@ def create_post(post: PostCreate):
     except Exception as e:
         print(f"🔥 AI Error: {e}")
         return {"instagram_version": f"Error: {str(e)}", "twitter_version": "Please try again."}
+
+@app.put("/posts/{post_id}/schedule")
+def schedule_post(post_id: int, schedule_data: PostSchedule):
+    db = SessionLocal()
+    post = db.query(PostDB).filter(PostDB.id == post_id).first()
+    
+    if not post:
+        db.close()
+        raise HTTPException(status_code=404, detail="Post not found")
+        
+    post.scheduled_time = schedule_data.scheduled_time
+    post.status = "Scheduled"
+    
+    db.commit()
+    db.close()
+    return {"message": "Post scheduled successfully!", "post_id": post_id, "scheduled_time": schedule_data.scheduled_time}
