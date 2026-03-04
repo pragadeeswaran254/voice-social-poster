@@ -105,7 +105,7 @@ def check_scheduled_posts():
             # --- CHANNEL B: SEND TO MOCK WEBHOOK APP ---
             try:
                 # We send the generated image and the instagram caption to port 8001
-                requests.post("http://localhost:8001/webhook", json={
+                requests.post("https://mockgram-api.onrender.com/webhook", json={
                     "image_url": image_url,
                     "caption": post.instagram_version
                 })
