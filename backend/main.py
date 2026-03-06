@@ -14,7 +14,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 
 # --- Database Imports ---
-from sqlalchemy import create_engine, Column, Integer, String, Text
+from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
@@ -28,7 +28,7 @@ engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- 1. DATABASE SCHEMA ---
+# --- 1. DATABASE SCHEMA (UPDATED WITH PLATFORMS) ---
 class PostDB(Base):
     __tablename__ = "posts"
     id = Column(Integer, primary_key=True, index=True)
@@ -43,6 +43,9 @@ class PostDB(Base):
     image_data = Column(Text, nullable=True) 
     scheduled_time = Column(String, nullable=True) 
     status = Column(String, default="Generated") 
+    # NEW PLATFORM ROUTING COLUMNS
+    post_telegram = Column(Integer, default=1)
+    post_mockgram = Column(Integer, default=1)
 
 Base.metadata.create_all(bind=engine)
 
@@ -56,7 +59,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- 2. SCHEDULER ENGINE (TELEGRAM & MOCK WEBHOOK AUTOMATION) ---
+# --- 2. SCHEDULER ENGINE (UPDATED WITH ROUTING LOGIC) ---
 def check_scheduled_posts():
     db = SessionLocal() 
     try:
@@ -79,39 +82,40 @@ def check_scheduled_posts():
             
             image_url = f"https://loremflickr.com/800/800/{keywords_str}?lock={post.image_seed}"
 
-            # --- CHANNEL A: Publish to Telegram ---
-            BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-            CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-            
-            if BOT_TOKEN and CHAT_ID:
-                try:
-                    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", json={
-                        "chat_id": CHAT_ID,
-                        "photo": image_url
-                    })
-                    
-                    text_message = f"🤖 *AI PUBLISH SUCCESS*\n\n📸 *Instagram:*\n{post.instagram_version}\n\n🐦 *Twitter:*\n{post.twitter_version}"
-                    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-                        "chat_id": CHAT_ID,
-                        "text": text_message,
-                        "parse_mode": "Markdown"
-                    })
-                    print("💬 Telegram Channel: SUCCESS")
-                except Exception as e:
-                    print(f"⚠️ Telegram Error: {e}")
-            else:
-                print("⚠️ Telegram keys missing!")
+            # --- CHANNEL A: Publish to Telegram (IF SELECTED) ---
+            if post.post_telegram == 1:
+                BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+                CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+                
+                if BOT_TOKEN and CHAT_ID:
+                    try:
+                        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", json={
+                            "chat_id": CHAT_ID,
+                            "photo": image_url
+                        })
+                        
+                        text_message = f"🤖 *AI PUBLISH SUCCESS*\n\n📸 *Instagram:*\n{post.instagram_version}\n\n🐦 *Twitter:*\n{post.twitter_version}"
+                        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                            "chat_id": CHAT_ID,
+                            "text": text_message,
+                            "parse_mode": "Markdown"
+                        })
+                        print("💬 Telegram Channel: SUCCESS")
+                    except Exception as e:
+                        print(f"⚠️ Telegram Error: {e}")
+                else:
+                    print("⚠️ Telegram keys missing!")
 
-            # --- CHANNEL B: SEND TO MOCK WEBHOOK APP ---
-            try:
-                # We send the generated image and the instagram caption to port 8001
-                requests.post("https://mockgram-api.onrender.com/webhook", json={
-                    "image_url": image_url,
-                    "caption": post.instagram_version
-                })
-                print("📱 Mock Webhook Channel: SUCCESS")
-            except Exception as e:
-                print(f"⚠️ Mock Webhook Error: {e}")
+            # --- CHANNEL B: SEND TO MOCK WEBHOOK APP (IF SELECTED) ---
+            if post.post_mockgram == 1:
+                try:
+                    requests.post("https://mockgram-api.onrender.com/webhook", json={
+                        "image_url": image_url,
+                        "caption": post.instagram_version
+                    })
+                    print("📱 Mock Webhook Channel: SUCCESS")
+                except Exception as e:
+                    print(f"⚠️ Mock Webhook Error: {e}")
             # --------------------------------------------
 
             # Update database status so frontend shows "Published" badge
@@ -128,7 +132,7 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(check_scheduled_posts, 'interval', minutes=1)
 scheduler.start()
 
-# --- 3. PYDANTIC MODELS ---
+# --- 3. PYDANTIC MODELS (UPDATED FOR ROUTING) ---
 class PostCreate(BaseModel):
     user_id: str 
     content: str
@@ -136,6 +140,8 @@ class PostCreate(BaseModel):
 
 class PostSchedule(BaseModel):
     scheduled_time: str
+    post_telegram: bool = True
+    post_mockgram: bool = True
 
 client = None
 if api_key:
@@ -218,9 +224,50 @@ def schedule_post(post_id: int, schedule_data: PostSchedule):
         db.close()
         raise HTTPException(status_code=404, detail="Post not found")
         
+    if post.status == "Published":
+        db.close()
+        raise HTTPException(status_code=400, detail="Cannot reschedule a post that is already published.")
+        
+    # SAVE NEW DATA
     post.scheduled_time = schedule_data.scheduled_time
+    post.post_telegram = 1 if schedule_data.post_telegram else 0
+    post.post_mockgram = 1 if schedule_data.post_mockgram else 0
     post.status = "Scheduled"
     
     db.commit()
     db.close()
-    return {"message": "Post scheduled successfully!", "post_id": post_id, "scheduled_time": schedule_data.scheduled_time}
+    return {"message": "Post scheduled successfully!", "post_id": post_id}
+
+@app.put("/posts/{post_id}/cancel_schedule")
+def cancel_schedule(post_id: int):
+    db = SessionLocal()
+    post = db.query(PostDB).filter(PostDB.id == post_id).first()
+    
+    if not post:
+        db.close()
+        raise HTTPException(status_code=404, detail="Post not found")
+        
+    if post.status == "Published":
+        db.close()
+        raise HTTPException(status_code=400, detail="Cannot cancel a post that is already published.")
+        
+    post.scheduled_time = None
+    post.status = "Generated"
+    
+    db.commit()
+    db.close()
+    return {"message": "Schedule cancelled successfully!"}
+
+@app.delete("/posts/{post_id}")
+def delete_post(post_id: int):
+    db = SessionLocal()
+    post = db.query(PostDB).filter(PostDB.id == post_id).first()
+    
+    if not post:
+        db.close()
+        raise HTTPException(status_code=404, detail="Post not found")
+        
+    db.delete(post)
+    db.commit()
+    db.close()
+    return {"message": "Post deleted successfully!"}
