@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import axios from 'axios'
-import { FaInstagram, FaTwitter, FaCopy, FaDownload, FaMicrophone, FaStop, FaPaperPlane, FaMagic, FaCalendarAlt, FaCheckCircle, FaClock } from "react-icons/fa";
+// ADDED FaTelegramPlane to your icons!
+import { FaInstagram, FaTwitter, FaCopy, FaDownload, FaMicrophone, FaStop, FaPaperPlane, FaMagic, FaCalendarAlt, FaCheckCircle, FaClock, FaTrash, FaTelegramPlane } from "react-icons/fa";
 import { SignedIn, SignedOut, SignIn, UserButton, useUser } from "@clerk/clerk-react";
 
 function App() {
@@ -13,6 +14,14 @@ function App() {
  
   const [scheduledTime, setScheduledTime] = useState("");
   const [isScheduling, setIsScheduling] = useState(false);
+
+  // NEW STATES FOR PLATFORM ROUTING
+  const [postToTelegram, setPostToTelegram] = useState(true);
+  const [postToMockgram, setPostToMockgram] = useState(true);
+
+  // STATES FOR RESCHEDULING
+  const [editingPostId, setEditingPostId] = useState(null);
+  const [editTime, setEditTime] = useState("");
 
   const recognitionRef = useRef(null)
 
@@ -53,9 +62,14 @@ function App() {
     }
   }
 
+  // UPDATED SCHEDULE FUNCTION TO SEND PLATFORM CHOICES
   const handleSchedulePost = async (postId) => {
     if (!scheduledTime) {
       alert("Please select a date and time first!");
+      return;
+    }
+    if (!postToTelegram && !postToMockgram) {
+      alert("You must select at least one platform to publish to!");
       return;
     }
    
@@ -67,11 +81,15 @@ function App() {
         : `http://127.0.0.1:8000/posts/${postId}/schedule`;
      
       await axios.put(apiUrl, {
-        scheduled_time: scheduledTime
+        scheduled_time: scheduledTime,
+        post_telegram: postToTelegram,
+        post_mockgram: postToMockgram
       });
 
       alert(`Awesome! Post successfully scheduled for ${scheduledTime.replace("T", " ")} 🚀`);
       setScheduledTime("");
+      setPostToTelegram(true); // Reset for next time
+      setPostToMockgram(true); // Reset for next time
       fetchPosts(); 
      
     } catch (error) {
@@ -79,6 +97,80 @@ function App() {
       alert("Failed to reach the database. Is your backend running?");
     } finally {
       setIsScheduling(false);
+    }
+  };
+
+  const handleReschedulePost = async (postId) => {
+    if (!editTime) {
+      alert("Please select a new date and time!");
+      return;
+    }
+   
+    setIsScheduling(true);
+   
+    try {
+      const apiUrl = import.meta.env.VITE_API_URL
+        ? `${import.meta.env.VITE_API_URL}/posts/${postId}/schedule`
+        : `http://127.0.0.1:8000/posts/${postId}/schedule`;
+     
+      // When rescheduling, we'll keep the toggles as true for now to keep it simple
+      await axios.put(apiUrl, {
+        scheduled_time: editTime,
+        post_telegram: true,
+        post_mockgram: true
+      });
+
+      alert(`Time successfully updated to ${editTime.replace("T", " ")} 🚀`);
+      setEditingPostId(null);
+      setEditTime("");
+      fetchPosts(); 
+     
+    } catch (error) {
+      console.error("Rescheduling failed", error);
+      alert(error.response?.data?.detail || "Failed to update schedule. It may have already been published.");
+    } finally {
+      setIsScheduling(false);
+    }
+  };
+
+  const handleCancelSchedule = async (postId) => {
+    if (!window.confirm("Are you sure you want to cancel this scheduled post?")) return;
+    
+    setIsScheduling(true);
+    try {
+      const apiUrl = import.meta.env.VITE_API_URL
+        ? `${import.meta.env.VITE_API_URL}/posts/${postId}/cancel_schedule`
+        : `http://127.0.0.1:8000/posts/${postId}/cancel_schedule`;
+     
+      await axios.put(apiUrl);
+
+      alert("Schedule cancelled! The post will remain in your dashboard.");
+      fetchPosts(); 
+     
+    } catch (error) {
+      console.error("Cancellation failed", error);
+      alert(error.response?.data?.detail || "Failed to cancel schedule.");
+    } finally {
+      setIsScheduling(false);
+    }
+  };
+
+  const handleDeletePost = async (postId) => {
+    if (!window.confirm("Are you sure you want to permanently delete this post? This cannot be undone! 🗑️")) return;
+    
+    try {
+      const apiUrl = import.meta.env.VITE_API_URL
+        ? `${import.meta.env.VITE_API_URL}/posts/${postId}`
+        : `http://127.0.0.1:8000/posts/${postId}`;
+     
+      await axios.delete(apiUrl);
+
+      alert("Post deleted successfully!");
+      fetchPosts(); 
+     
+    } catch (error) {
+      console.error("Deletion failed", error);
+      alert("Failed to delete the post.");
     }
   };
 
@@ -320,6 +412,15 @@ function App() {
                           <FaCheckCircle /> Published
                         </span>
                       )}
+
+                      <button 
+                        onClick={() => handleDeletePost(post.id)}
+                        className="btn-hover"
+                        style={{ backgroundColor: "#fee2e2", color: "#dc2626", border: "none", padding: "6px 14px", borderRadius: "20px", fontWeight: "bold", cursor: "pointer", fontSize: "12px", display: "flex", alignItems: "center", gap: "5px", marginLeft: "10px" }}
+                        title="Delete this post permanently"
+                      >
+                        <FaTrash /> Delete
+                      </button>
                     </div>
                   </div>
 
@@ -382,7 +483,7 @@ function App() {
 
                   </div>
 
-                  {/* Smart Scheduling UI */}
+                  {/* Smart Scheduling UI - ONLY SHOW IF NOT SCHEDULED/PUBLISHED */}
                   {(!post.status || post.status === "Generated") && (
                     <div style={{ margin: "0 30px 30px 30px", padding: "25px", backgroundColor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "20px" }}>
                       <h3 style={{ fontSize: "18px", fontWeight: "700", color: "#1e293b", margin: "0 0 8px 0", display: "flex", alignItems: "center", gap: "10px" }}>
@@ -392,6 +493,37 @@ function App() {
                         Select when you want our AI engine to automatically beam this content to Telegram and your Web App.
                       </p>
                      
+                      {/* NEW PLATFORM SELECTION TOGGLES */}
+                      <div style={{ display: "flex", gap: "10px", marginBottom: "20px", flexWrap: "wrap" }}>
+                        <button
+                          onClick={() => setPostToTelegram(!postToTelegram)}
+                          className="btn-hover"
+                          style={{
+                            display: "flex", alignItems: "center", gap: "8px", padding: "10px 18px", borderRadius: "20px",
+                            fontWeight: "bold", fontSize: "14px", cursor: "pointer", transition: "all 0.2s",
+                            backgroundColor: postToTelegram ? "#eff6ff" : "#f3f4f6",
+                            color: postToTelegram ? "#3b82f6" : "#9ca3af",
+                            border: postToTelegram ? "2px solid #3b82f6" : "2px solid #e5e7eb"
+                          }}
+                        >
+                          <FaTelegramPlane size={18} /> Send to Telegram
+                        </button>
+                        
+                        <button
+                          onClick={() => setPostToMockgram(!postToMockgram)}
+                          className="btn-hover"
+                          style={{
+                            display: "flex", alignItems: "center", gap: "8px", padding: "10px 18px", borderRadius: "20px",
+                            fontWeight: "bold", fontSize: "14px", cursor: "pointer", transition: "all 0.2s",
+                            backgroundColor: postToMockgram ? "#fdf2f8" : "#f3f4f6",
+                            color: postToMockgram ? "#db2777" : "#9ca3af",
+                            border: postToMockgram ? "2px solid #db2777" : "2px solid #e5e7eb"
+                          }}
+                        >
+                          <FaInstagram size={18} /> Send to Mockgram
+                        </button>
+                      </div>
+
                       <div style={{ display: "flex", gap: "15px", alignItems: "center", flexWrap: "wrap" }}>
                         <input
                           className="modern-input"
@@ -408,14 +540,14 @@ function App() {
                         <button
                           className="btn-hover"
                           style={{
-                            backgroundColor: (scheduledTime && !isScheduling) ? "#10b981" : "#cbd5e1",
+                            backgroundColor: (scheduledTime && !isScheduling && (postToTelegram || postToMockgram)) ? "#10b981" : "#cbd5e1",
                             color: "white", fontWeight: "bold", padding: "16px 32px",
                             borderRadius: "14px", border: "none", fontSize: "16px",
-                            cursor: (scheduledTime && !isScheduling) ? "pointer" : "not-allowed",
+                            cursor: (scheduledTime && !isScheduling && (postToTelegram || postToMockgram)) ? "pointer" : "not-allowed",
                             display: "flex", alignItems: "center", gap: "10px"
                           }}
                           onClick={() => handleSchedulePost(post.id)}
-                          disabled={!scheduledTime || isScheduling}
+                          disabled={!scheduledTime || isScheduling || (!postToTelegram && !postToMockgram)}
                         >
                           {isScheduling ? "Saving..." : <>Schedule Post 🚀</>}
                         </button>
@@ -423,11 +555,69 @@ function App() {
                     </div>
                   )}
 
+                  {/* SCHEDULED BANNER + EDIT/CANCEL FEATURE */}
                   {post.status === "Scheduled" && (
-                    <div style={{ margin: "0 30px 30px 30px", padding: "20px", backgroundColor: "#fef3c7", borderRadius: "16px", textAlign: "center", border: "1px solid #fde68a" }}>
-                      <p style={{ margin: 0, color: "#b45309", fontWeight: "600", fontSize: "15px", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}>
-                        <FaClock /> This post is securely queued in the background worker to publish at {post.scheduled_time.replace("T", " ")}
-                      </p>
+                    <div style={{ margin: "0 30px 30px 30px" }}>
+                      {editingPostId === post.id ? (
+                        /* --- EDIT MODE UI --- */
+                        <div style={{ padding: "20px", backgroundColor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "16px", display: "flex", gap: "15px", alignItems: "center", flexWrap: "wrap" }}>
+                          <input
+                            className="modern-input"
+                            type="datetime-local"
+                            style={{ padding: "14px", border: "2px solid #e2e8f0", borderRadius: "12px", flex: "1", minWidth: "200px", fontSize: "15px", color: "#1e293b", backgroundColor: "white", cursor: "pointer" }}
+                            value={editTime}
+                            onChange={(e) => setEditTime(e.target.value)}
+                          />
+                          <button
+                            className="btn-hover"
+                            style={{ backgroundColor: "#10b981", color: "white", fontWeight: "bold", padding: "14px 24px", borderRadius: "12px", border: "none", cursor: "pointer" }}
+                            onClick={() => handleReschedulePost(post.id)}
+                            disabled={isScheduling}
+                          >
+                            {isScheduling ? "Updating..." : "Save New Time"}
+                          </button>
+                          <button
+                            className="btn-hover"
+                            style={{ backgroundColor: "#cbd5e1", color: "#1e293b", fontWeight: "bold", padding: "14px 24px", borderRadius: "12px", border: "none", cursor: "pointer" }}
+                            onClick={() => setEditingPostId(null)}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        /* --- VIEW MODE UI --- */
+                        <div style={{ padding: "20px", backgroundColor: "#fef3c7", borderRadius: "16px", border: "1px solid #fde68a", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "15px" }}>
+                          <p style={{ margin: 0, color: "#b45309", fontWeight: "600", fontSize: "15px", display: "flex", alignItems: "center", gap: "8px" }}>
+                            <FaClock /> Securely queued to publish at {post.scheduled_time ? post.scheduled_time.replace("T", " ") : ""}
+                            
+                            {/* Little badges to show which platforms are selected! */}
+                            {post.post_telegram === 1 && <span style={{backgroundColor:"#eff6ff", color:"#3b82f6", padding:"2px 8px", borderRadius:"12px", fontSize:"11px", marginLeft:"5px"}}>Telegram</span>}
+                            {post.post_mockgram === 1 && <span style={{backgroundColor:"#fdf2f8", color:"#db2777", padding:"2px 8px", borderRadius:"12px", fontSize:"11px"}}>Mockgram</span>}
+                          </p>
+                          
+                          {/* Button Container for Edit and Cancel */}
+                          <div style={{ display: "flex", gap: "10px" }}>
+                            <button
+                              className="btn-hover"
+                              style={{ backgroundColor: "white", border: "1px solid #f59e0b", color: "#d97706", padding: "8px 16px", borderRadius: "10px", fontWeight: "bold", cursor: "pointer", display: "flex", alignItems: "center", gap: "6px" }}
+                              onClick={() => {
+                                setEditingPostId(post.id);
+                                setEditTime(post.scheduled_time || "");
+                              }}
+                            >
+                              ✏️ Edit Time
+                            </button>
+                            
+                            <button
+                              className="btn-hover"
+                              style={{ backgroundColor: "white", border: "1px solid #ef4444", color: "#ef4444", padding: "8px 16px", borderRadius: "10px", fontWeight: "bold", cursor: "pointer", display: "flex", alignItems: "center", gap: "6px" }}
+                              onClick={() => handleCancelSchedule(post.id)}
+                            >
+                              ❌ Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
 
