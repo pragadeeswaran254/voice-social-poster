@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from google import genai 
 import os
@@ -8,6 +9,9 @@ import json
 import random
 import requests
 import re 
+
+# --- Import Your New Image Service ---
+from image_service import HuggingFaceService
 
 # --- Scheduler Imports ---
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -28,7 +32,7 @@ engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- 1. DATABASE SCHEMA (UPDATED WITH PLATFORMS) ---
+# --- 1. DATABASE SCHEMA ---
 class PostDB(Base):
     __tablename__ = "posts"
     id = Column(Integer, primary_key=True, index=True)
@@ -40,10 +44,9 @@ class PostDB(Base):
     image_prompt = Column(String)     
     image_seed = Column(Integer)      
     is_upload = Column(Integer, default=0) 
-    image_data = Column(Text, nullable=True) 
+    image_data = Column(Text, nullable=True)
     scheduled_time = Column(String, nullable=True) 
     status = Column(String, default="Generated") 
-    # NEW PLATFORM ROUTING COLUMNS
     post_telegram = Column(Integer, default=1)
     post_mockgram = Column(Integer, default=1)
 
@@ -59,7 +62,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- 2. SCHEDULER ENGINE (UPDATED WITH ROUTING LOGIC) ---
+# Mount the static folder so React can load the images
+os.makedirs("static", exist_ok=True)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# --- 2. SCHEDULER ENGINE ---
 def check_scheduled_posts():
     db = SessionLocal() 
     try:
@@ -73,26 +80,24 @@ def check_scheduled_posts():
         for post in due_posts:
             print(f"[{current_time}] 🚀 Publishing Post ID {post.id}...")
             
-            # Reconstruct the Image URL
-            ignore_words = ["today", "went", "want", "just", "like", "with", "this", "that", "the", "and", "for", "from"]
-            clean_content = re.sub(r'[^a-z ]', '', post.content.lower())
-            words = clean_content.split()
-            search_keywords = [w for w in words if len(w) > 2 and w not in ignore_words][:2]
-            keywords_str = ",".join(search_keywords) if search_keywords else "social"
-            
-            image_url = f"https://loremflickr.com/800/800/{keywords_str}?lock={post.image_seed}"
+            image_url = post.image_data
 
-            # --- CHANNEL A: Publish to Telegram (IF SELECTED) ---
+            # --- CHANNEL A: Publish to Telegram ---
             if post.post_telegram == 1:
                 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
                 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
                 
                 if BOT_TOKEN and CHAT_ID:
                     try:
-                        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", json={
-                            "chat_id": CHAT_ID,
-                            "photo": image_url
-                        })
+                        local_filename = image_url.split("/")[-1]
+                        local_filepath = os.path.join("static", local_filename)
+                        
+                        with open(local_filepath, 'rb') as photo:
+                            requests.post(
+                                f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", 
+                                data={"chat_id": CHAT_ID},
+                                files={"photo": photo}
+                            )
                         
                         text_message = f"🤖 *AI PUBLISH SUCCESS*\n\n📸 *Instagram:*\n{post.instagram_version}\n\n🐦 *Twitter:*\n{post.twitter_version}"
                         requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
@@ -106,7 +111,7 @@ def check_scheduled_posts():
                 else:
                     print("⚠️ Telegram keys missing!")
 
-            # --- CHANNEL B: SEND TO MOCK WEBHOOK APP (IF SELECTED) ---
+            # --- CHANNEL B: SEND TO MOCK WEBHOOK ---
             if post.post_mockgram == 1:
                 try:
                     requests.post("https://mockgram-api.onrender.com/webhook", json={
@@ -116,9 +121,7 @@ def check_scheduled_posts():
                     print("📱 Mock Webhook Channel: SUCCESS")
                 except Exception as e:
                     print(f"⚠️ Mock Webhook Error: {e}")
-            # --------------------------------------------
 
-            # Update database status so frontend shows "Published" badge
             post.status = "Published"
             db.commit()
             print("✅ Database Status Updated")
@@ -132,7 +135,7 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(check_scheduled_posts, 'interval', minutes=1)
 scheduler.start()
 
-# --- 3. PYDANTIC MODELS (UPDATED FOR ROUTING) ---
+# --- 3. PYDANTIC MODELS ---
 class PostCreate(BaseModel):
     user_id: str 
     content: str
@@ -164,7 +167,8 @@ def get_posts(user_id: str = None):
 
 @app.post("/posts")
 def create_post(post: PostCreate):
-    if not client: return {"error": "API Key missing"}
+    if not client: 
+        raise HTTPException(status_code=500, detail="Gemini API Key missing")
 
     prompt = f"""
     You are an expert social media manager. 
@@ -180,6 +184,7 @@ def create_post(post: PostCreate):
     Do not include any markdown formatting.
     """
     
+    # --- 1. Try to Generate Text via Gemini ---
     try:
         response = client.models.generate_content(
             model="gemini-2.5-flash", 
@@ -193,7 +198,22 @@ def create_post(post: PostCreate):
             response_text = response_text.split("```")[1].split("```")[0].strip()
         
         ai_content = json.loads(response_text)
+        
+    except Exception as e:
+        # THE BYPASS: If Gemini is busy, don't crash! Use this dummy text instead.
+        print(f"🔥 Gemini is busy. Using bypass text! Error: {e}")
+        ai_content = {
+            "instagram_version": f"🤖 [AI TEXT UNAVAILABLE] But here is the post you asked for about: {post.content} #MockData",
+            "twitter_version": f"🤖 [AI TEXT UNAVAILABLE] Testing the image generator for: {post.content}"
+        }
 
+    # --- 2 & 3. Generate Image and Save to DB ---
+    try:
+        # Generate Image via Hugging Face
+        image_generator = HuggingFaceService()
+        generated_image_url = image_generator.generate_image(post.content)
+
+        # Save to Database
         db = SessionLocal()
         new_post_entry = PostDB(
             user_id=post.user_id, 
@@ -203,7 +223,8 @@ def create_post(post: PostCreate):
             twitter_version=ai_content.get("twitter_version", ""),
             image_prompt=post.content,
             image_seed=random.randint(100000, 999999),
-            is_upload=0 
+            is_upload=0,
+            image_data=generated_image_url # Save the Hugging Face URL
         )
         db.add(new_post_entry)
         db.commit()
@@ -212,8 +233,8 @@ def create_post(post: PostCreate):
         return new_post_entry
 
     except Exception as e:
-        print(f"🔥 AI Error: {e}")
-        return {"instagram_version": f"Error: {str(e)}", "twitter_version": "Please try again."}
+        print(f"🔥 Fatal Error (Image or DB): {e}")
+        raise HTTPException(status_code=500, detail="The System encountered an error. Both APIs might be down. Please try again later.")
 
 @app.put("/posts/{post_id}/schedule")
 def schedule_post(post_id: int, schedule_data: PostSchedule):
@@ -228,7 +249,6 @@ def schedule_post(post_id: int, schedule_data: PostSchedule):
         db.close()
         raise HTTPException(status_code=400, detail="Cannot reschedule a post that is already published.")
         
-    # SAVE NEW DATA
     post.scheduled_time = schedule_data.scheduled_time
     post.post_telegram = 1 if schedule_data.post_telegram else 0
     post.post_mockgram = 1 if schedule_data.post_mockgram else 0
