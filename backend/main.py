@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 import json
 import random
 import requests
-import re 
 
 # --- Import Your New Image Service ---
 from image_service import HuggingFaceService
@@ -18,7 +17,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 
 # --- Database Imports ---
-from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
@@ -62,7 +61,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount the static folder so React can load the images
 os.makedirs("static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -89,15 +87,15 @@ def check_scheduled_posts():
                 
                 if BOT_TOKEN and CHAT_ID:
                     try:
-                        local_filename = image_url.split("/")[-1]
-                        local_filepath = os.path.join("static", local_filename)
-                        
-                        with open(local_filepath, 'rb') as photo:
-                            requests.post(
-                                f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", 
-                                data={"chat_id": CHAT_ID},
-                                files={"photo": photo}
-                            )
+                        # 🚀 VERCEL FIX: Send the URL string directly! 
+                        # No more opening local files that don't exist on serverless.
+                        requests.post(
+                            f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", 
+                            data={
+                                "chat_id": CHAT_ID,
+                                "photo": image_url 
+                            }
+                        )
                         
                         text_message = f"🤖 *AI PUBLISH SUCCESS*\n\n📸 *Instagram:*\n{post.instagram_version}\n\n🐦 *Twitter:*\n{post.twitter_version}"
                         requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
@@ -124,7 +122,6 @@ def check_scheduled_posts():
 
             post.status = "Published"
             db.commit()
-            print("✅ Database Status Updated")
             
     except Exception as e:
         print(f"Scheduler Error: {e}")
@@ -160,7 +157,6 @@ def get_posts(user_id: str = None):
     if not user_id:
         db.close()
         return []
-
     posts = db.query(PostDB).filter(PostDB.user_id == user_id).order_by(PostDB.id.desc()).all()
     db.close()
     return posts
@@ -181,7 +177,7 @@ def create_post(post: PostCreate):
       "instagram_version": "your caption here",
       "twitter_version": "your tweet here"
     }}
-    Do not include any markdown formatting.
+    Do not include any markdown formatting or backticks.
     """
     
     # --- 1. Try to Generate Text via Gemini ---
@@ -192,28 +188,31 @@ def create_post(post: PostCreate):
         )
         
         response_text = response.text.strip()
-        if "```json" in response_text:
-            response_text = response_text.split("```json")[1].split("```")[0].strip()
-        elif "```" in response_text:
-            response_text = response_text.split("```")[1].split("```")[0].strip()
         
-        ai_content = json.loads(response_text)
+        # 🚀 Bulletproof JSON cleanup to prevent crashes
+        if response_text.startswith("```json"):
+            response_text = response_text[7:]
+        elif response_text.startswith("```"):
+            response_text = response_text[3:]
+            
+        if response_text.endswith("```"):
+            response_text = response_text[:-3]
+            
+        ai_content = json.loads(response_text.strip())
         
     except Exception as e:
-        # THE BYPASS: If Gemini is busy, don't crash! Use this dummy text instead.
-        print(f"🔥 Gemini is busy. Using bypass text! Error: {e}")
+        print(f"🔥 Gemini Error: {e}")
+        # 🚀 Display the exact API error on the frontend so you don't have to guess!
         ai_content = {
-            "instagram_version": f"🤖 [AI TEXT UNAVAILABLE] But here is the post you asked for about: {post.content} #MockData",
-            "twitter_version": f"🤖 [AI TEXT UNAVAILABLE] Testing the image generator for: {post.content}"
+            "instagram_version": f"🤖 [AI TEXT ERROR] {str(e)}",
+            "twitter_version": f"🤖 Please check Vercel Environment Variables. Error: {str(e)}"
         }
 
     # --- 2 & 3. Generate Image and Save to DB ---
     try:
-        # Generate Image via Hugging Face
         image_generator = HuggingFaceService()
         generated_image_url = image_generator.generate_image(post.content)
 
-        # Save to Database
         db = SessionLocal()
         new_post_entry = PostDB(
             user_id=post.user_id, 
@@ -224,7 +223,7 @@ def create_post(post: PostCreate):
             image_prompt=post.content,
             image_seed=random.randint(100000, 999999),
             is_upload=0,
-            image_data=generated_image_url # Save the Hugging Face URL
+            image_data=generated_image_url 
         )
         db.add(new_post_entry)
         db.commit()
@@ -233,21 +232,16 @@ def create_post(post: PostCreate):
         return new_post_entry
 
     except Exception as e:
-        print(f"🔥 Fatal Error (Image or DB): {e}")
-        raise HTTPException(status_code=500, detail="The System encountered an error. Both APIs might be down. Please try again later.")
+        print(f"🔥 Fatal Error: {e}")
+        raise HTTPException(status_code=500, detail="The System encountered an error.")
 
 @app.put("/posts/{post_id}/schedule")
 def schedule_post(post_id: int, schedule_data: PostSchedule):
     db = SessionLocal()
     post = db.query(PostDB).filter(PostDB.id == post_id).first()
-    
     if not post:
         db.close()
         raise HTTPException(status_code=404, detail="Post not found")
-        
-    if post.status == "Published":
-        db.close()
-        raise HTTPException(status_code=400, detail="Cannot reschedule a post that is already published.")
         
     post.scheduled_time = schedule_data.scheduled_time
     post.post_telegram = 1 if schedule_data.post_telegram else 0
@@ -258,35 +252,13 @@ def schedule_post(post_id: int, schedule_data: PostSchedule):
     db.close()
     return {"message": "Post scheduled successfully!", "post_id": post_id}
 
-@app.put("/posts/{post_id}/cancel_schedule")
-def cancel_schedule(post_id: int):
-    db = SessionLocal()
-    post = db.query(PostDB).filter(PostDB.id == post_id).first()
-    
-    if not post:
-        db.close()
-        raise HTTPException(status_code=404, detail="Post not found")
-        
-    if post.status == "Published":
-        db.close()
-        raise HTTPException(status_code=400, detail="Cannot cancel a post that is already published.")
-        
-    post.scheduled_time = None
-    post.status = "Generated"
-    
-    db.commit()
-    db.close()
-    return {"message": "Schedule cancelled successfully!"}
-
 @app.delete("/posts/{post_id}")
 def delete_post(post_id: int):
     db = SessionLocal()
     post = db.query(PostDB).filter(PostDB.id == post_id).first()
-    
     if not post:
         db.close()
         raise HTTPException(status_code=404, detail="Post not found")
-        
     db.delete(post)
     db.commit()
     db.close()
