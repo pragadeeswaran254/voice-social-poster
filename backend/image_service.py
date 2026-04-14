@@ -31,16 +31,16 @@ class HuggingFaceService:
             if "items" in data:
                 # 🚀 VERCEL FIX: Just grab the direct public URL from Google!
                 photo_url = data["items"][0]["link"]
-                print(f"✅ Found Google Image! Passing direct URL to Telegram...")
+                print(f"✅ Found Google Image! Passing direct URL to Telegram: {photo_url}")
                 
                 # Return the public link directly so Telegram can download it.
                 return photo_url
             else:
-                print("⚠️ Google couldn't find an image for this.")
+                print("⚠️ Google couldn't find an image (or daily quota limit reached).")
                 
         except Exception as e:
             print(f"🔥 System Error connecting to Google: {e}")
             
-        # 🛟 Return a public URL for the fallback too!
-        print("🛟 Using emergency fallback image...")
-        return "https://loremflickr.com/800/800/technology"
+        # 🛟 NEW FALLBACK: A clear placeholder so you are never tricked again!
+        print("🛟 Using emergency fallback placeholder...")
+        return "https://placehold.co/800x800/png?text=API+Limit+Reached\\nOr+Image+Not+Found"
