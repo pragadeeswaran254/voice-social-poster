@@ -427,10 +427,9 @@ function App() {
                   {/* Image Section */}
                   <div style={{ width: "100%", height: "450px", overflow: "hidden", backgroundColor: "#f9fafb", position: "relative" }}>
                     <img 
-                      src={`https://wsrv.nl/?url=${encodeURIComponent(imageUrl)}`}
+                      src={imageUrl}
                       alt="Theme Visual"
                       style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                      crossOrigin="anonymous"
                     />
                     <button
                       onClick={() => handleDownload(imageUrl)}
