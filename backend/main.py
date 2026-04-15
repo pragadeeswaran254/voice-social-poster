@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -64,7 +64,21 @@ app.add_middleware(
 os.makedirs("static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# --- 2. SCHEDULER ENGINE ---
+# --- 2. IMAGE PROXY ENDPOINT ---
+# This tricks Pexels by letting the backend download the image for the frontend
+@app.get("/proxy-image")
+def get_image_proxy(url: str):
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        img_response = requests.get(url, headers=headers, stream=True)
+        return Response(content=img_response.content, media_type="image/jpeg")
+    except Exception as e:
+        print(f"Proxy Error: {e}")
+        raise HTTPException(status_code=500, detail="Image proxy failed")
+
+# --- 3. SCHEDULER ENGINE ---
 def check_scheduled_posts():
     db = SessionLocal() 
     try:
@@ -80,15 +94,12 @@ def check_scheduled_posts():
             
             image_url = post.image_data
 
-            # --- CHANNEL A: Publish to Telegram ---
             if post.post_telegram == 1:
                 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
                 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
                 
                 if BOT_TOKEN and CHAT_ID:
                     try:
-                        # 🚀 VERCEL FIX: Send the URL string directly! 
-                        # No more opening local files that don't exist on serverless.
                         requests.post(
                             f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", 
                             data={
@@ -106,10 +117,7 @@ def check_scheduled_posts():
                         print("💬 Telegram Channel: SUCCESS")
                     except Exception as e:
                         print(f"⚠️ Telegram Error: {e}")
-                else:
-                    print("⚠️ Telegram keys missing!")
 
-            # --- CHANNEL B: SEND TO MOCK WEBHOOK ---
             if post.post_mockgram == 1:
                 try:
                     requests.post("https://mockgram-api.onrender.com/webhook", json={
@@ -132,7 +140,7 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(check_scheduled_posts, 'interval', minutes=1)
 scheduler.start()
 
-# --- 3. PYDANTIC MODELS ---
+# --- 4. PYDANTIC MODELS ---
 class PostCreate(BaseModel):
     user_id: str 
     content: str
@@ -180,7 +188,6 @@ def create_post(post: PostCreate):
     Do not include any markdown formatting or backticks.
     """
     
-    # --- 1. Try to Generate Text via Gemini ---
     try:
         response = client.models.generate_content(
             model="gemini-2.5-flash", 
@@ -189,7 +196,6 @@ def create_post(post: PostCreate):
         
         response_text = response.text.strip()
         
-        # 🚀 Bulletproof JSON cleanup to prevent crashes
         if response_text.startswith("```json"):
             response_text = response_text[7:]
         elif response_text.startswith("```"):
@@ -202,13 +208,11 @@ def create_post(post: PostCreate):
         
     except Exception as e:
         print(f"🔥 Gemini Error: {e}")
-        # 🚀 Display the exact API error on the frontend so you don't have to guess!
         ai_content = {
             "instagram_version": f"🤖 [AI TEXT ERROR] {str(e)}",
             "twitter_version": f"🤖 Please check Vercel Environment Variables. Error: {str(e)}"
         }
 
-    # --- 2 & 3. Generate Image and Save to DB ---
     try:
         image_generator = HuggingFaceService()
         generated_image_url = image_generator.generate_image(post.content)
