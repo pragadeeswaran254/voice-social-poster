@@ -388,7 +388,7 @@ function App() {
                 .slice(0, 2)
                 .join(",");
 
-              let imageUrl = post.is_upload ? `data:image/jpeg;base64,${post.image_data}` : `https://loremflickr.com/800/800/${searchKeywords}?lock=${post.image_seed}`;
+              let imageUrl = post.is_upload ? `data:image/jpeg;base64,${post.image_data}` : post.image_data;
 
               return (
                 <div key={index} className="glass-card" style={{ display: "flex", flexDirection: "column" }}>
@@ -427,10 +427,13 @@ function App() {
                   {/* Image Section */}
                   <div style={{ width: "100%", height: "450px", overflow: "hidden", backgroundColor: "#f9fafb", position: "relative" }}>
                     <img 
-                      src={`/proxy-image?url=${encodeURIComponent(imageUrl)}`}
-                      alt="Theme Visual"
-                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                    />
+                      src={window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+      ? `http://127.0.0.1:8000/proxy-image?url=${encodeURIComponent(imageUrl)}`
+      : `/proxy-image?url=${encodeURIComponent(imageUrl)}`
+  }
+  alt="Theme Visual"
+  style={{ width: "100%", height: "100%", objectFit: "cover" }}
+/>
                     <button
                       onClick={() => handleDownload(imageUrl)}
                       className="btn-hover"
