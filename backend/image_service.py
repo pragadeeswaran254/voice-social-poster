@@ -7,40 +7,37 @@ load_dotenv()
 
 class HuggingFaceService: 
     def __init__(self):
-        # 🔒 Securely load the Google API keys
-        self.google_api_key = os.getenv("GOOGLE_API_KEY")
-        self.google_cx = os.getenv("GOOGLE_CX")
-        self.search_url = "https://www.googleapis.com/customsearch/v1"
+        # 🔒 Securely load the Pexels API key
+        self.pexels_api_key = os.getenv("PEXELS_API_KEY")
+        self.search_url = "https://api.pexels.com/v1/search"
 
     def generate_image(self, voice_prompt: str) -> str:
-        print(f"🔍 Searching Google Images for: '{voice_prompt}'...")
+        print(f"🔍 Searching Pexels for beautiful images of: '{voice_prompt}'...")
         
+        headers = {
+            "Authorization": self.pexels_api_key
+        }
         params = {
-            "q": voice_prompt,
-            "key": self.google_api_key,
-            "cx": self.google_cx,
-            "searchType": "image",
-            "num": 1
+            "query": voice_prompt,
+            "per_page": 1
         }
         
         try:
-            response = requests.get(self.search_url, params=params)
+            response = requests.get(self.search_url, headers=headers, params=params)
             data = response.json()
             
-            # Check if Google found image results
-            if "items" in data:
-                # 🚀 VERCEL FIX: Just grab the direct public URL from Google!
-                photo_url = data["items"][0]["link"]
-                print(f"✅ Found Google Image! Passing direct URL to Telegram: {photo_url}")
-                
-                # Return the public link directly so Telegram can download it.
+            # Check if Pexels found image results
+            if "photos" in data and len(data["photos"]) > 0:
+                # 🚀 Grab the high-quality image URL!
+                photo_url = data["photos"][0]["src"]["large"]
+                print(f"✅ Found Pexels Image! Passing direct URL to Telegram: {photo_url}")
                 return photo_url
             else:
-                print("⚠️ Google couldn't find an image (or daily quota limit reached).")
+                print("⚠️ Pexels couldn't find an image for this specific prompt.")
                 
         except Exception as e:
-            print(f"🔥 System Error connecting to Google: {e}")
+            print(f"🔥 System Error connecting to Pexels: {e}")
             
-        # 🛟 NEW FALLBACK: A clear placeholder so you are never tricked again!
+        # 🛟 Return the fallback placeholder if all else fails
         print("🛟 Using emergency fallback placeholder...")
-        return "https://placehold.co/800x800/png?text=API+Limit+Reached\\nOr+Image+Not+Found"
+        return "https://placehold.co/800x800/png?text=Image+Not+Found"
